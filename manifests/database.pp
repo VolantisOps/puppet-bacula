@@ -22,46 +22,47 @@ class bacula::database {
   $db_parameters = $bacula::database_backend ? {
     'sqlite' => '',
     'mysql'  => "--host=${bacula::database_host} --user=${bacula::database_user} --password=${real_db_password} --port=${bacula::database_port} --database=${bacula::database_name}",
+    default  => '',
   }
 
   if $bacula::manage_database {
-    exec { 'create_db_and_tables':
-      command     => "${script_directory}/create_bacula_database;
-                      ${script_directory}/make_bacula_tables ${db_parameters}",
+    file_line { 'bacula_database_name':
+      path => "${script_directory}/make_mysql_tables",
+      line => "db_name=${bacula::database_name}",
+      match => "^db_name=(${bacula::database_name}|\${db_name:-XXX_DBNAME_XXX})"
+    }
+    
+    exec { 'create_bacula_tables':
+      command     => "${script_directory}/make_mysql_tables ${db_parameters}",
       refreshonly => true,
+      require     => File_Line['bacula_database_name']
     }
 
     case $bacula::database_backend {
       'mysql': {
         require mysql::client
 
-        $grant_query = "use mysql
-          grant all privileges
-            on ${bacula::database_name}.*
-            to ${bacula::database_user}@localhost
-            ${bacula::database_password};
-          grant all privileges
-            on ${bacula::database_name}.*
-            to ${bacula::database_user}@\"%\"
-            ${bacula::database_password};
-          flush privileges;"
-
         $notify_create_db = $bacula::manage_database ? {
-          true  => Exec['create_db_and_tables'],
-          false => undef,
+          true    => Exec['create_bacula_tables'],
+          default => undef,
         }
-
-        $require_classes = defined(Class['mysql::client']) ? {
-          true  => Class['mysql::client'],
-          false => undef,
+        
+        mysql::grant { 'create_bacula_database': 
+          mysql_db        => $bacula::database_name,
+          mysql_user      => $bacula::database_user,
+          mysql_password  => $bacula::database_password,
+          mysql_create_db => true,
+          mysql_host      => 'localhost',
         }
-
-        mysql::query { 'grant_bacula_user_privileges':
-          mysql_query => $grant_query,
-          mysql_db    => undef,
-          mysql_host  => $bacula::database_host,
-          notify      => $notify_create_db,
-          require     => $require_classes,
+        
+        mysql::grant { 'grant_bacula_user_privileges':
+          mysql_db        => $bacula::database_name,
+          mysql_user      => $bacula::database_user,
+          mysql_password  => $bacula::database_password,
+          mysql_create_db => false,
+          mysql_host      => '%',
+          require         => Mysql::Grant['create_bacula_database'],
+          notify          => $notify_create_db,
         }
       }
       'sqlite': {
